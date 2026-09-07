@@ -1,0 +1,4 @@
+/* Keep the frame sequence above the page background and behind the content. */
+#sequence-canvas { z-index: 0; }
+.backdrop { z-index: 1; }
+main { position: relative; z-index: 2; }
