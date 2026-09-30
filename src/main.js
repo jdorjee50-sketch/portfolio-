@@ -1,14 +1,12 @@
 import './style.css';
 import './layers.css';
+import './liquid-glass.css';
 
 const frameCount = 151;
 const canvas = document.querySelector('#sequence-canvas');
 const context = canvas.getContext('2d', { alpha: false });
 const frames = Array.from({ length: frameCount }, (_, index) => {
-  const number = String(index + 1).padStart(6, '0');
-  const image = new Image();
-  image.src = `/frames/frame_${number}.png`;
-  return image;
+  return { image: new Image(), requested: false };
 });
 
 let renderedFrame = -1;
@@ -51,7 +49,20 @@ function render() {
   const distance = document.documentElement.scrollHeight - window.innerHeight;
   const progress = distance > 0 ? window.scrollY / distance : 0;
   const frame = Math.min(frameCount - 1, Math.max(0, Math.round(progress * (frameCount - 1))));
-  const image = frames[frame];
+  // Load the current frame first, then nearby frames so scroll scrubbing stays
+  // responsive without requesting the entire 150+ MB sequence at page startup.
+  [0, 1, -1, 2, -2, 3, -3].forEach((offset) => {
+    const index = frame + offset;
+    const entry = frames[index];
+    if (entry && !entry.requested) {
+      entry.requested = true;
+      const number = String(index + 1).padStart(6, '0');
+      entry.image.addEventListener('load', requestRender, { once: true });
+      entry.image.src = `${import.meta.env.BASE_URL}frames/frame_${number}.png`;
+    }
+  });
+
+  const image = frames[frame].image;
 
   if (frame !== renderedFrame && image.complete && image.naturalWidth) {
     drawCover(image);
@@ -66,8 +77,6 @@ function requestRender() {
   }
 }
 
-frames[0].addEventListener('load', render, { once: true });
-frames.forEach((image) => image.addEventListener('load', requestRender));
 window.addEventListener('scroll', requestRender, { passive: true });
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
