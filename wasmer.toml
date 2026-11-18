@@ -1,0 +1,18 @@
+[package]
+version = "0.1.0"
+description = "Yeshey Ngedup Dorji creative developer portfolio"
+
+[dependencies]
+"wasmer/static-web-server" = "1"
+
+[fs]
+"/public" = "dist"
+"/settings" = "settings"
+
+[[command]]
+name = "serve"
+module = "wasmer/static-web-server:webserver"
+runner = "https://webc.org/runner/wasi"
+
+[command.annotations.wasi]
+main-args = ["-w", "/settings/config.toml"]
