@@ -4,15 +4,17 @@ import './liquid-glass.css';
 
 const frameCount = 151;
 const canvas = document.querySelector('#sequence-canvas');
-const context = canvas.getContext('2d', { alpha: false });
+const context = canvas?.getContext('2d', { alpha: false });
 const frames = Array.from({ length: frameCount }, (_, index) => {
   return { image: new Image(), requested: false };
 });
 
 let renderedFrame = -1;
 let queued = false;
+let previousScrollY = window.scrollY;
 
 function resizeCanvas() {
+  if (!canvas || !context) return;
   const scale = Math.min(window.devicePixelRatio || 1, 2);
   canvas.width = Math.round(window.innerWidth * scale);
   canvas.height = Math.round(window.innerHeight * scale);
@@ -46,27 +48,52 @@ function drawCover(image) {
 
 function render() {
   queued = false;
+  if (!canvas || !context) return;
   const distance = document.documentElement.scrollHeight - window.innerHeight;
   const progress = distance > 0 ? window.scrollY / distance : 0;
   const frame = Math.min(frameCount - 1, Math.max(0, Math.round(progress * (frameCount - 1))));
-  // Load the current frame first, then nearby frames so scroll scrubbing stays
-  // responsive without requesting the entire 150+ MB sequence at page startup.
-  [0, 1, -1, 2, -2, 3, -3].forEach((offset) => {
+  const direction = window.scrollY >= previousScrollY ? 1 : -1;
+  previousScrollY = window.scrollY;
+  // Prioritize the frames ahead of the current scroll direction, while keeping
+  // a small buffer behind it. This avoids loading the whole image sequence.
+  [0, direction, direction * 2, direction * 3, direction * 4, direction * 5,
+    -direction, -direction * 2, -direction * 3].forEach((offset, position) => {
     const index = frame + offset;
     const entry = frames[index];
     if (entry && !entry.requested) {
       entry.requested = true;
       const number = String(index + 1).padStart(6, '0');
+      entry.image.loading = 'eager';
+      if (position === 0) entry.image.fetchPriority = 'high';
       entry.image.addEventListener('load', requestRender, { once: true });
       entry.image.src = `${import.meta.env.BASE_URL}frames/frame_${number}.png`;
     }
   });
 
-  const image = frames[frame].image;
+  // If the exact frame is still downloading, draw the closest ready frame so
+  // quick scrolls continue moving instead of leaving a stale image on screen.
+  let displayFrame = frame;
+  if (!frames[displayFrame].image.complete || !frames[displayFrame].image.naturalWidth) {
+    for (let offset = 1; offset < frameCount; offset += 1) {
+      const ahead = frame + direction * offset;
+      const behind = frame - direction * offset;
+      if (ahead < frameCount && ahead >= 0 && frames[ahead].image.complete && frames[ahead].image.naturalWidth) {
+        displayFrame = ahead;
+        break;
+      }
+      if (behind < frameCount && behind >= 0 && frames[behind].image.complete && frames[behind].image.naturalWidth) {
+        displayFrame = behind;
+        break;
+      }
+    }
+  }
 
-  if (frame !== renderedFrame && image.complete && image.naturalWidth) {
-    drawCover(image);
-    renderedFrame = frame;
+  if (displayFrame !== renderedFrame) {
+    const image = frames[displayFrame].image;
+    if (image.complete && image.naturalWidth) {
+      drawCover(image);
+      renderedFrame = displayFrame;
+    }
   }
 }
 
@@ -81,10 +108,14 @@ window.addEventListener('scroll', requestRender, { passive: true });
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
 
-const observer = new IntersectionObserver((entries) => entries.forEach((entry) => {
-  if (entry.isIntersecting) entry.target.classList.add('visible');
-}), { threshold: 0.12 });
-document.querySelectorAll('.reveal').forEach((element) => observer.observe(element));
+if ('IntersectionObserver' in window) {
+  const observer = new IntersectionObserver((entries) => entries.forEach((entry) => {
+    if (entry.isIntersecting) entry.target.classList.add('visible');
+  }), { threshold: 0.12 });
+  document.querySelectorAll('.reveal').forEach((element) => observer.observe(element));
+} else {
+  document.querySelectorAll('.reveal').forEach((element) => element.classList.add('visible'));
+}
 
 const menuButton = document.querySelector('.menu-button');
 const navigation = document.querySelector('#site-nav');
@@ -113,8 +144,8 @@ function setAssistantOpen(isOpen) {
   else window.speechSynthesis?.cancel();
 }
 
-assistantToggle.addEventListener('click', () => setAssistantOpen(assistantPanel.hidden));
-document.querySelector('.assistant-close').addEventListener('click', () => setAssistantOpen(false));
+assistantToggle?.addEventListener('click', () => setAssistantOpen(assistantPanel.hidden));
+document.querySelector('.assistant-close')?.addEventListener('click', () => setAssistantOpen(false));
 
 function answerCommand(rawCommand) {
   const command = rawCommand.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -147,20 +178,25 @@ function answerCommand(rawCommand) {
   return 'Try asking to see the work, learn about Yeshey, open a project, or find contact details.';
 }
 
-assistantForm.addEventListener('submit', (event) => {
+assistantForm?.addEventListener('submit', (event) => {
   event.preventDefault();
-  const command = assistantInput.value.trim();
+  const command = assistantInput?.value.trim();
   if (!command) return;
-  const reply = answerCommand(command);
-  assistantReply.textContent = reply;
-  assistantInput.value = '';
-  if (speakReply && 'speechSynthesis' in window) {
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(reply);
-    utterance.lang = document.documentElement.lang || 'en';
-    window.speechSynthesis.speak(utterance);
+  try {
+    const reply = answerCommand(command);
+    if (assistantReply) assistantReply.textContent = reply;
+    assistantInput.value = '';
+    if (speakReply && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(reply);
+      utterance.lang = document.documentElement.lang || 'en';
+      window.speechSynthesis.speak(utterance);
+    }
+    speakReply = false;
+  } catch (error) {
+    console.error('Portfolio assistant failed:', error);
+    if (assistantReply) assistantReply.textContent = 'I could not complete that request. Please try another command.';
   }
-  speakReply = false;
 });
 
 let mediaRecorder;
@@ -168,6 +204,67 @@ let microphoneStream;
 let audioChunks = [];
 let transcriberPromise;
 let recordingTimer;
+let speechRecognition;
+let speechRecognitionActive = false;
+let preferLocalTranscription = false;
+
+function startBrowserSpeechRecognition() {
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!Recognition) return false;
+
+  try {
+    speechRecognition = new Recognition();
+  } catch {
+    return false;
+  }
+  speechRecognition.lang = document.documentElement.lang || 'en-US';
+  speechRecognition.interimResults = false;
+  speechRecognition.maxAlternatives = 1;
+  speechRecognitionActive = true;
+  assistantVoice.textContent = '■';
+  assistantVoice.setAttribute('aria-label', 'Stop listening');
+  assistantStatus.textContent = 'Listening… speak your request.';
+
+  speechRecognition.onresult = (event) => {
+    const transcript = event.results?.[0]?.[0]?.transcript?.trim();
+    if (!transcript) {
+      assistantStatus.textContent = 'I could not hear that. Please try again or type your request.';
+      return;
+    }
+    assistantInput.value = transcript;
+    speakReply = true;
+    assistantForm.requestSubmit();
+    assistantStatus.textContent = 'Voice request received.';
+  };
+  speechRecognition.onerror = (event) => {
+    const messages = {
+      'not-allowed': 'Allow microphone access for this site, then try again.',
+      'service-not-allowed': 'Speech recognition is blocked by this browser. Try another browser or type your request.',
+      'no-speech': 'I could not hear that. Please speak and try again.',
+      network: 'Speech recognition needs a connection. Check your internet and try again.',
+    };
+    if (navigator.mediaDevices?.getUserMedia && window.MediaRecorder) {
+      preferLocalTranscription = true;
+      assistantStatus.textContent = `${messages[event.error] || 'Voice recognition failed.'} Tap the mic again to use local transcription.`;
+    } else {
+      assistantStatus.textContent = messages[event.error] || 'Voice recognition failed. Please try again or type your request.';
+    }
+  };
+  speechRecognition.onend = () => {
+    speechRecognitionActive = false;
+    assistantVoice.disabled = false;
+    assistantVoice.textContent = '🎙';
+    assistantVoice.setAttribute('aria-label', 'Start recording a voice command');
+  };
+  try {
+    speechRecognition.start();
+  } catch (error) {
+    speechRecognitionActive = false;
+    assistantVoice.textContent = '🎙';
+    return false;
+  }
+  return true;
+}
 
 async function getTranscriber() {
   if (!transcriberPromise) {
@@ -175,6 +272,12 @@ async function getTranscriber() {
       .then(({ pipeline, env }) => {
         env.allowRemoteModels = true;
         env.useBrowserCache = true;
+        // SharedArrayBuffer is not enabled on many static hosts, so force the
+        // single-threaded WASM backend for reliable execution on Wasmer.
+        if (env.backends?.onnx?.wasm) {
+          env.backends.onnx.wasm.numThreads = 1;
+          env.backends.onnx.wasm.proxy = false;
+        }
         return pipeline('automatic-speech-recognition', 'onnx-community/whisper-tiny.en', {
           device: 'wasm',
           dtype: 'q8',
@@ -245,7 +348,13 @@ function stopRecording() {
   if (mediaRecorder?.state === 'recording') mediaRecorder.stop();
 }
 
-assistantVoice.addEventListener('click', async () => {
+assistantVoice?.addEventListener('click', async () => {
+  if (speechRecognitionActive) {
+    speechRecognition.stop();
+    assistantStatus.textContent = 'Stopping listening…';
+    return;
+  }
+
   if (mediaRecorder?.state === 'recording') {
     assistantStatus.textContent = 'Finishing your recording…';
     assistantVoice.disabled = true;
@@ -254,11 +363,17 @@ assistantVoice.addEventListener('click', async () => {
   }
 
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
-    assistantStatus.textContent = 'This browser cannot record audio. Open the site in a current browser or type your request.';
+    if (!startBrowserSpeechRecognition()) {
+      assistantStatus.textContent = 'This browser cannot record audio or recognize speech. Try a current browser or type your request.';
+    }
     return;
   }
 
   try {
+    // Browser speech recognition avoids downloading a large model on browsers
+    // that provide it. Keep the existing local model as a fallback.
+    if (!preferLocalTranscription && startBrowserSpeechRecognition()) return;
+    preferLocalTranscription = false;
     microphoneStream = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
     });
